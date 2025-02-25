@@ -1,0 +1,9 @@
+/.vscode
+/.embuild
+/target
+/Cargo.lock
+cfg.toml
+build.env
+.env
+.envrc
+*-image
