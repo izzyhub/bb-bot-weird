@@ -9,7 +9,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+  WIFI_SSID: ${{ secrets.WIFI_SSID }}
+  WIFI_PASS: ${{ secrets.WIFI_PASS }}
 
 jobs:
   rust-checks:
@@ -33,7 +35,7 @@ jobs:
         with:
           default: true
           buildtargets: esp32s3
-          ldproxy: false
+          ldproxy: true
       - name: Enable caching
         uses: Swatinem/rust-cache@v2
       - name: Run command
