@@ -1,6 +1,6 @@
-use thiserror::Error;
-use defmt::{error, Format};
 use alloc::string::ToString;
+use defmt::{error, Format};
+use thiserror::Error;
 
 #[derive(Error, Debug, Format)]
 pub enum BBBotError {
@@ -25,10 +25,9 @@ impl From<()> for BBBotError {
         error!("unit error");
         BBBotError::UnitError
     }
-
 }
 impl From<semver::Error> for BBBotError {
-    fn from(error: semver::Error)-> Self {
+    fn from(error: semver::Error) -> Self {
         let error_message = error.to_string();
         error!("semver error: {=str}", error_message);
         BBBotError::VersionError

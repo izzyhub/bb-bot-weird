@@ -1,69 +1,49 @@
 #![no_std]
 #![no_main]
 
-use defmt::{info, debug, error, Format};
+use defmt::{debug, error, info};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use esp_hal::{delay::Delay, main, rmt::Rmt, time::RateExtU32};
-use esp_hal::rng::Rng;
-use esp_hal::time;
 use esp_hal::clock::CpuClock;
-use esp_hal::rsa::Rsa;
-use {defmt_rtt as _, esp_backtrace as _};
-use esp_hal_smartled::{smartLedBuffer, SmartLedsAdapter};
-use smart_leds::{
-    brightness, gamma,
-    hsv::{hsv2rgb, Hsv},
-    SmartLedsWrite,
-    RGB8,
-    colors,
-};
+use esp_hal::rng::Rng;
+use esp_hal::{rmt::Rmt, time::RateExtU32};
+//use esp_hal::rsa::Rsa;
 use embassy_net::{
-    DhcpConfig,
     dns::DnsSocket,
     tcp::client::{TcpClient, TcpClientState},
-    Stack, StackResources, Runner,
+    Runner, Stack,
 };
-use esp_wifi::{
-    EspWifiController,
-    init,
-    wifi::{
-        WifiController, WifiState, WifiEvent, WifiDevice,
-        utils::create_network_interface, AccessPointInfo, AuthMethod, ClientConfiguration,
-        Configuration, WifiError, WifiStaDevice,
-    },
+use esp_hal_smartled::{smartLedBuffer, SmartLedsAdapter};
+use esp_wifi::wifi::{WifiController, WifiDevice, WifiStaDevice};
+use smart_leds::{
+    brightness,
+    colors,
+    gamma,
+    //hsv::{hsv2rgb, Hsv},
+    SmartLedsWrite,
+    RGB8,
 };
-use smoltcp::{
-    iface::{SocketSet, SocketStorage},
-    wire::{DhcpOption, IpAddress},
-};
+use {defmt_rtt as _, esp_backtrace as _};
 
-use reqwless;
-use reqwless::request::RequestBuilder;
 use reqwless::client::{HttpClient, TlsConfig};
+use reqwless::request::RequestBuilder;
 
 use anyhow::Result;
 use semver::Version;
 
-use botifactory_types::{ProjectBody, ReleaseBody};
 use bb_bot_weird::config;
 use bb_bot_weird::error::BBBotError;
+use botifactory_types::ReleaseBody;
 
 extern crate alloc;
 use alloc::format;
-use alloc::string::String;
+//use alloc::string::String;
 use alloc::string::ToString;
 
-// When you are okay with using a nightly compiler it's better to use
-// https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
-macro_rules! mk_static {
-        ($t:ty,$val:expr) => {{
-                    static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-                    #[deny(unused_attributes)]
-                    let x = STATIC_CELL.uninit().write(($val));
-                    x
-                }};
-}
+use bb_bot_simplified_wifi::WifiManager;
+use static_cell::StaticCell;
+
+static WIFI_MANAGER: StaticCell<WifiManager> = StaticCell::new();
 
 async fn check_for_fw_updates(stack: &'static Stack<'_>, tls_seed: u64) -> Result<()> {
     debug!("checking for fw updates");
@@ -86,9 +66,9 @@ async fn check_for_fw_updates(stack: &'static Stack<'_>, tls_seed: u64) -> Resul
     //let mut rsa = Rsa::new(peripherals.RSA);
     //let mut tcp_client = TcpClient::new(*stack, &state);
     let config = TlsConfig::new(
-            tls_seed,
-            &mut tx_buffer,
-            &mut rx_buffer,
+        tls_seed,
+        &mut tx_buffer,
+        &mut rx_buffer,
         reqwless::client::TlsVerify::None,
     );
     debug!("http client");
@@ -99,46 +79,48 @@ async fn check_for_fw_updates(stack: &'static Stack<'_>, tls_seed: u64) -> Resul
     let headers = [("accept", "application/json")];
     let mut request = client
         .request(reqwless::request::Method::GET, &release_url)
-        .await.map_err(|error| BBBotError::from(error))?
+        .await
+        .map_err(BBBotError::from)?
         .content_type(reqwless::headers::ContentType::ApplicationJson)
         .headers(&headers);
 
     debug!("sending request");
-    let mut response = request.send(&mut buffer)
-        .await.map_err(|error| BBBotError::from(error))?;
+    let response = request.send(&mut buffer).await.map_err(BBBotError::from)?;
     debug!("status code: {}", response.status);
     if response.status.is_successful() {
         debug!("reading response");
-        let response_body = response.body().read_to_end().await
-            .map_err(|error| BBBotError::from(error))?;
+        let response_body = response
+            .body()
+            .read_to_end()
+            .await
+            .map_err(BBBotError::from)?;
         debug!("response read");
 
         let content = core::str::from_utf8(response_body)?;
         debug!("conent read");
 
-        let (release_response, size): (ReleaseBody, usize) = serde_json_core::from_str(content).map_err(|e| BBBotError::from(e))?;
+        let (release_response, _size): (ReleaseBody, usize) =
+            serde_json_core::from_str(content).map_err(BBBotError::from)?;
         let latest_version = release_response.release.version;
-        let binary_version = Version::parse(config::RELEASE_VERSION).map_err(|error| BBBotError::from(error))?;
+        let binary_version = Version::parse(config::RELEASE_VERSION).map_err(BBBotError::from)?;
 
         info!("latest version: {=str}", latest_version.to_string());
         info!("binary version: {=str}", binary_version.to_string());
-    }
-    else {
+    } else {
         error!("error response");
     }
     Ok(())
-
 }
 
 #[embassy_executor::task]
-async fn check_for_fw_updates_task(stack: &'static Stack<'static>, tls_seed: u64)
-{
+async fn check_for_fw_updates_task(stack: &'static Stack<'static>, tls_seed: u64) {
     loop {
         debug!("check_for_fw_updates_task called");
         match check_for_fw_updates(stack, tls_seed).await {
             Ok(_) => debug!("success!!"),
-            Err(error) => error!("error checking for updates: {=str}", error.to_string())
+            Err(error) => error!("error checking for updates: {=str}", error.to_string()),
         }
+        Timer::after(Duration::from_secs(10)).await;
         debug!("check_for_fw_updates done?");
     }
 }
@@ -154,19 +136,18 @@ async fn main(spawner: Spawner) {
 
     let timer0 = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER);
     esp_hal_embassy::init(timer0.alarm0);
+    info!("Embassy initialized!");
 
     let mut rng = Rng::new(peripherals.RNG);
 
     let timer1 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0);
-    let wifi_init = &*mk_static!(EspWifiController<'static>,
-        esp_wifi::init(
-            timer1.timer0,
-            rng,
-            peripherals.RADIO_CLK,
-        ).expect("expected to create init function for esp_wifi")
+
+    let wifi_manager = WIFI_MANAGER.init(
+        WifiManager::new(rng, timer1.timer0, peripherals.RADIO_CLK, peripherals.WIFI)
+            .await
+            .expect("Failed to create wifi manager"),
     );
 
-    info!("Embassy initialized!");
     let led_pin = peripherals.GPIO48;
     let freq = 80.MHz();
     let rmt = Rmt::new(peripherals.RMT, freq).unwrap();
@@ -181,43 +162,20 @@ async fn main(spawner: Spawner) {
     led.write(brightness(gamma(data.iter().cloned()), 10))
         .unwrap();
 
-
-
     let data: [RGB8; LED_COUNT] = [colors::GREEN];
     led.write(brightness(gamma(data.iter().cloned()), 10))
         .unwrap();
 
-
-    //let wifi = peripherals.WIFI;
-    let (wifi_interface, controller) =
-    esp_wifi::wifi::new_with_mode(&wifi_init, peripherals.WIFI, WifiStaDevice).unwrap();
-    let dhcp_config = DhcpConfig::default();
-    //dhcp_config.hostname = Some(String::from("bb-bot-weird"));
-
-    let net_config = embassy_net::Config::dhcpv4(dhcp_config);
-
-    let net_seed = rng.random() as u64 | ((rng.random() as u64) << 32);
     let tls_seed = rng.random() as u64 | ((rng.random() as u64) << 32);
 
-    let (stack, runner) = mk_static!((Stack, Runner<WifiDevice<WifiStaDevice>>),
-        embassy_net::new(
-            wifi_interface,
-            net_config,
-            mk_static!(StackResources<3>, StackResources::<3>::new()),
-            net_seed
-    ));
-
-    spawner.spawn(connection_task(controller)).ok();
-    spawner.spawn(net_task(runner)).ok();
-    stack.wait_config_up().await;
-
-    //let mut rx_buffer = [0; 4096];
-    //let mut tx_buffer = [0; 4096];
+    spawner.spawn(connection_task(wifi_manager.controller)).ok();
+    spawner.spawn(net_task(wifi_manager.runner)).ok();
+    wifi_manager.stack.wait_config_up().await;
 
     info!("Waiting to get IP address...");
     loop {
-        if let Some(config) = stack.config_v4() {
-            info!("Got IP: {}", config.address);
+        if let Some(config) = wifi_manager.stack.config_v4() {
+            info!("Got IP: {}", config.address.address());
             debug!("debug logs?");
             break;
         }
@@ -225,65 +183,30 @@ async fn main(spawner: Spawner) {
     }
 
     debug!("spawning check_for_fw_updates_task");
-    //let rsa = Rsa::new(peripherals.RSA);
-    loop {
-        spawner.spawn(check_for_fw_updates_task(stack, tls_seed)).ok();
-        Timer::after(Duration::from_secs(10)).await;
-    }
-
-    /*
-    loop {
-        //info!("Hello world!");
-        //Timer::after(Duration::from_secs(1)).await;
-        info!("Hello world!");
-        Timer::after(Duration::from_secs(1)).await;
-    }
-    */
-
-    // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/v0.23.1/examples/src/bin
+    spawner
+        .spawn(check_for_fw_updates_task(wifi_manager.stack, tls_seed))
+        .ok();
 }
 
-async fn establish_wifi_connect(mut controller: WifiController<'static>) -> Result<()> {
-    info!("start connection task");
-    //info!("Device capabilities: {:#?}", controller.capabilities());
-    loop {
-        match esp_wifi::wifi::wifi_state() {
-            WifiState::StaConnected => {
-                // wait until we're no longer connected
-                controller.wait_for_event(WifiEvent::StaDisconnected).await;
-                Timer::after(Duration::from_millis(5000)).await
-            }
-            _ => { 
-                debug!("weird state???");
-            }
-        }
-        if !matches!(controller.is_started(), Ok(true)) {
-            let client_config = Configuration::Client(ClientConfiguration {
-                ssid: config::WIFI_SSID.try_into().expect("WIFI_SSID not defined?"),
-                password: config::WIFI_PASS.try_into().expect("WIFI_PASS not defined?"),
-                ..Default::default()
-            });
-            controller.set_configuration(&client_config);
-            info!("starting wifi");
-            controller.start_async().await.expect("failed to start controller");
-            info!("wifi started");
-        }
-        info!("about to connect...");
-        match controller.connect_async().await {
-            Ok(_) => info!("Wifi connected"),
-            Err(err) => {
-                error!("failed to connect to wifi: {}", err);
-                Timer::after(Duration::from_millis(5000)).await;
-            }
-        }
-    }
-
-}
 #[embassy_executor::task]
 async fn net_task(runner: &'static mut Runner<'static, WifiDevice<'static, WifiStaDevice>>) {
     runner.run().await
 }
 #[embassy_executor::task]
-async fn connection_task(mut controller: WifiController<'static>) {
-    establish_wifi_connect(controller).await;
+async fn connection_task(controller: &'static mut WifiController<'static>) {
+    match WifiManager::connect(
+        controller,
+        config::WIFI_SSID,
+        config::WIFI_PASS,
+        Duration::from_secs(10),
+    )
+    .await
+    {
+        Ok(_) => {
+            debug!("connection successful");
+        }
+        Err(error) => {
+            error!("Error connecting: {}", error)
+        }
+    }
 }
