@@ -7,3 +7,5 @@ build.env
 .env
 .envrc
 *-image
+*.bin
+espflash.toml

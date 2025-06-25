@@ -1,8 +1,8 @@
 use alloc::string::ToString;
-use defmt::{error, Format};
+use log::error;
 use thiserror::Error;
 
-#[derive(Error, Debug, Format)]
+#[derive(Error, Debug)]
 pub enum BBBotError {
     #[error("Network Error")]
     NetworkError,
@@ -16,7 +16,7 @@ pub enum BBBotError {
 
 impl From<reqwless::Error> for BBBotError {
     fn from(error: reqwless::Error) -> Self {
-        error!("network error: {}", error);
+        error!("network error: {:?}", error);
         BBBotError::NetworkError
     }
 }
@@ -29,7 +29,7 @@ impl From<()> for BBBotError {
 impl From<semver::Error> for BBBotError {
     fn from(error: semver::Error) -> Self {
         let error_message = error.to_string();
-        error!("semver error: {=str}", error_message);
+        error!("semver error: {}", error_message);
         BBBotError::VersionError
     }
 }

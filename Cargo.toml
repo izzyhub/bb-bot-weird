@@ -11,7 +11,7 @@ path = "./src/bin/async_main.rs"
 esp-mbedtls = { git = "https://github.com/esp-rs/esp-mbedtls.git", rev = "1806f8f622b08a9b54de91814eea13c6b3d9ff1c", features = [
   "esp32s3",
 ] }
-embassy-net = { version = "0.6.0", features = [
+embassy-net = { version = "0.6.0", default-features = false, features = [
   "dhcpv4",
   "medium-ethernet",
   "tcp",
@@ -21,24 +21,26 @@ embassy-net = { version = "0.6.0", features = [
 embedded-io = "0.6.1"
 embedded-io-async = "0.6.1"
 esp-alloc = { version = "0.6.0" }
-esp-backtrace = { version = "0.15.1", features = [
-  "defmt",
+esp-println = { version = "0.13", features = ["esp32s3", "log"] }
+esp-backtrace = { version = "0.15.0", features = [
+  "println",
   "esp32s3",
   "exception-handler",
   "panic-handler",
-] }
-esp-hal = { version = "0.23.1", features = ["defmt", "esp32s3", "unstable"] }
+], default-features = false }
+esp-hal = { version = "0.23.1", features = ["esp32s3", "unstable"] }
 esp-wifi = { version = "0.12.0", default-features = false, features = [
   "ble",
   "coex",
-  "defmt",
   "esp-alloc",
   "esp32s3",
   "utils",
   "wifi",
   "smoltcp",
 ] }
-heapless = { version = "0.8.0", default-features = false }
+heapless = { version = "0.8.0", default-features = false, features = [
+  "portable-atomic",
+] }
 smoltcp = { version = "0.12.0", default-features = false, features = [
   "medium-ethernet",
   "multicast",
@@ -50,6 +52,7 @@ smoltcp = { version = "0.12.0", default-features = false, features = [
   "socket-raw",
   "socket-tcp",
   "socket-udp",
+  "async",
 ] }
 # for more networking protocol support see https://crates.io/crates/edge-net
 bleps = { git = "https://github.com/bjoernQ/bleps", package = "bleps", rev = "a5148d8ae679e021b78f53fd33afb8bb35d0b62e", features = [
@@ -57,35 +60,35 @@ bleps = { git = "https://github.com/bjoernQ/bleps", package = "bleps", rev = "a5
   "macros",
 ] }
 critical-section = "1.2.0"
-defmt = "1.0.1"
-defmt-rtt = "1.0.0"
-embassy-executor = { version = "0.7.0", features = [
-  "defmt",
-  "task-arena-size-20480",
-] }
+log = "0.4.22"
+embassy-executor = { version = "0.7.0", features = ["task-arena-size-20480"] }
 embassy-time = { version = "0.4.0", features = ["generic-queue-8"] }
 esp-hal-embassy = { version = "0.6.0", features = ["esp32s3"] }
 static_cell = { version = "2.1.0", features = ["nightly"] }
 smart-leds = "0.4.0"
 esp-hal-smartled = { version = "0.14", git = "https://github.com/esp-rs/esp-hal-community/", rev = "ad75112ae5d4b4fe2fe927356dc281283cafedfc" }
-reqwless = { version = "0.13.0", features = ["defmt", "alloc"] }
+reqwless = { version = "0.13.0", features = ["alloc"] }
 anyhow = { version = "1.0.95", default-features = false }
 botifactory-types = { git = "https://github.com/izzyhub/botifactory-types" }
 #botifactory-types = { path = "../botifactory-types" }
-#bb-bot-simplified-wifi = { path = "../bb-bot-simplified-wifi" }
-bb-bot-simplified-wifi = { git = "https://github.com/izzyhub/bb-bot-simplified-wifi" }
+bb-bot-simplified-wifi = { path = "../bb-bot-simplified-wifi" }
+#bb-bot-simplified-wifi = { git = "https://github.com/izzyhub/bb-bot-simplified-wifi", default-features = false }
+#botifactory-ota-nostd = { path = "../botifactory-ota-nostd" }
+botifactory-ota-nostd = { git = "https://github.com/izzyhub/botifactory-ota-nostd" }
 thiserror = { version = "2.0.12", default-features = false }
 serde = { version = "1.0.216", default-features = false, features = [
   "alloc",
   "derive",
 ] }
-serde-json-core = { version = "0.6.0", features = ["heapless", "defmt"] }
+serde-json-core = { version = "0.6.0", features = ["heapless"] }
 #display_json = "0.2.1"
 semver = { version = "1.0.25", default-features = false, features = ["serde"] }
 bytes = { version = "1.10.0", default-features = false, features = [
   "serde",
   "extra-platforms",
 ] }
+esp-storage = { version = "0.6.0", features = ["esp32s3"] }
+embedded-hal-async = { version = "1.0.0" }
 
 [profile.dev]
 # Rust debug is too slow.
@@ -96,12 +99,16 @@ opt-level = "s"
 #opt-level = 'z'
 
 [profile.release]
-codegen-units = 1 # LLVM can perform better optimizations using a single thread
+codegen-units = 1        # LLVM can perform better optimizations using a single thread
 debug = 2
-#strip = true
+strip = "debuginfo"
 debug-assertions = false
 incremental = false
 lto = 'fat'
 opt-level = 's'
 overflow-checks = false
 panic = 'abort'
+
+
+[package.metadata.espflash]
+partition_table = "./partitions.csv"

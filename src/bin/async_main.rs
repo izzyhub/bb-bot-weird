@@ -1,20 +1,21 @@
 #![no_std]
 #![no_main]
 
-use defmt::{debug, error, info};
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-use esp_hal::clock::CpuClock;
-use esp_hal::rng::Rng;
-use esp_hal::{rmt::Rmt, time::RateExtU32};
-//use esp_hal::rsa::Rsa;
 use embassy_net::{
     dns::DnsSocket,
     tcp::client::{TcpClient, TcpClientState},
     Runner, Stack,
 };
+use embassy_time::{Duration, Timer};
+use esp_backtrace as _;
+use esp_hal::clock::CpuClock;
+use esp_hal::reset;
+use esp_hal::rng::Rng;
+use esp_hal::{rmt::Rmt, time::RateExtU32};
 use esp_hal_smartled::{smartLedBuffer, SmartLedsAdapter};
 use esp_wifi::wifi::{WifiController, WifiDevice, WifiStaDevice};
+use log::{debug, error, info};
 use smart_leds::{
     brightness,
     colors,
@@ -23,104 +24,84 @@ use smart_leds::{
     SmartLedsWrite,
     RGB8,
 };
-use {defmt_rtt as _, esp_backtrace as _};
 
 use reqwless::client::{HttpClient, TlsConfig};
-use reqwless::request::RequestBuilder;
 
 use anyhow::Result;
 use semver::Version;
 
 use bb_bot_weird::config;
 use bb_bot_weird::error::BBBotError;
-use botifactory_types::ReleaseBody;
+use esp_storage::FlashStorage;
 
 extern crate alloc;
-use alloc::format;
-//use alloc::string::String;
-use alloc::string::ToString;
 
 use bb_bot_simplified_wifi::WifiManager;
+use botifactory_ota_nostd::{accept_fw, BotifactoryClient, BotifactoryUrlBuilder};
+use esp_println::println;
 use static_cell::StaticCell;
 
 static WIFI_MANAGER: StaticCell<WifiManager> = StaticCell::new();
+static TCP_STATE: StaticCell<TcpClientState<1, 4096, 4096>> = StaticCell::new();
+static RX_BUFFER: StaticCell<[u8; 4096]> = StaticCell::new();
+static TX_BUFFER: StaticCell<[u8; 4096]> = StaticCell::new();
 
-async fn check_for_fw_updates(stack: &'static Stack<'_>, tls_seed: u64) -> Result<()> {
-    debug!("checking for fw updates");
-    let release_url = format!(
-        "{}/{}/{}/latest",
-        config::BOTIFACTORY_URL,
-        config::BOTIFACTORY_PROJECT_NAME,
-        config::BOTIFACTORY_CHANNEL_NAME
-    );
-    debug!("release_url: {=str}", release_url.to_string());
-
-    let mut rx_buffer = [0; 4096];
-    let mut tx_buffer = [0; 4096];
-    debug!("socket/client setup");
+async fn check_for_fw_updates(
+    stack: &'static Stack<'_>,
+    tcp_client: &TcpClient<'_, 1, 4096, 4096>,
+    tls_seed: u64,
+) -> Result<()> {
     let dns_socket = DnsSocket::new(*stack);
-    let tcp_state = TcpClientState::<1, 4096, 4096>::new();
-    let tcp_client = TcpClient::new(*stack, &tcp_state);
-    debug!("socket/client done");
 
-    //let mut rsa = Rsa::new(peripherals.RSA);
-    //let mut tcp_client = TcpClient::new(*stack, &state);
+    let tx_buffer = TX_BUFFER.init([0; 4096]);
+    let rx_buffer = RX_BUFFER.init([0; 4096]);
     let config = TlsConfig::new(
         tls_seed,
-        &mut tx_buffer,
-        &mut rx_buffer,
+        tx_buffer,
+        rx_buffer,
         reqwless::client::TlsVerify::None,
     );
-    debug!("http client");
-    let mut client = HttpClient::new_with_tls(&tcp_client, &dns_socket, config);
+    let client = HttpClient::new_with_tls(tcp_client, &dns_socket, config);
 
-    let mut buffer = [0u8; 4096];
-    debug!("building request");
-    let headers = [("accept", "application/json")];
-    let mut request = client
-        .request(reqwless::request::Method::GET, &release_url)
-        .await
-        .map_err(BBBotError::from)?
-        .content_type(reqwless::headers::ContentType::ApplicationJson)
-        .headers(&headers);
+    let botifactory_url_builder = BotifactoryUrlBuilder::new(
+        config::BOTIFACTORY_URL,
+        config::BOTIFACTORY_PROJECT_NAME,
+        config::BOTIFACTORY_CHANNEL_NAME,
+    );
+    let latest_url = botifactory_url_builder.latest();
+    debug!("latest_url: {latest_url}");
 
-    debug!("sending request");
-    let response = request.send(&mut buffer).await.map_err(BBBotError::from)?;
-    debug!("status code: {}", response.status);
-    if response.status.is_successful() {
-        debug!("reading response");
-        let response_body = response
-            .body()
-            .read_to_end()
-            .await
-            .map_err(BBBotError::from)?;
-        debug!("response read");
+    let mut botifactory_client = BotifactoryClient::new(latest_url, client);
 
-        let content = core::str::from_utf8(response_body)?;
-        debug!("conent read");
+    debug!("reading server version");
+    let latest_version = botifactory_client.read_version().await?;
+    let binary_version = Version::parse(config::RELEASE_VERSION).map_err(BBBotError::from)?;
 
-        let (release_response, _size): (ReleaseBody, usize) =
-            serde_json_core::from_str(content).map_err(BBBotError::from)?;
-        let latest_version = release_response.release.version;
-        let binary_version = Version::parse(config::RELEASE_VERSION).map_err(BBBotError::from)?;
+    info!("latest version: {}", latest_version);
+    info!("binary version: {}", binary_version);
 
-        info!("latest version: {=str}", latest_version.to_string());
-        info!("binary version: {=str}", binary_version.to_string());
-    } else {
-        error!("error response");
+    if latest_version > binary_version {
+        let mut storage = FlashStorage::new();
+        botifactory_client.read_binary(&mut storage).await?;
+        info!("resetting");
+        reset::software_reset();
     }
+
     Ok(())
 }
 
 #[embassy_executor::task]
 async fn check_for_fw_updates_task(stack: &'static Stack<'static>, tls_seed: u64) {
+    let tcp_state = TCP_STATE.init(TcpClientState::<1, 4096, 4096>::new());
+    let tcp_client = TcpClient::new(*stack, tcp_state);
+
     loop {
         debug!("check_for_fw_updates_task called");
-        match check_for_fw_updates(stack, tls_seed).await {
+        match check_for_fw_updates(stack, &tcp_client, tls_seed).await {
             Ok(_) => debug!("success!!"),
-            Err(error) => error!("error checking for updates: {=str}", error.to_string()),
+            Err(error) => error!("error checking for updates: {}", error),
         }
-        Timer::after(Duration::from_secs(10)).await;
+        Timer::after(Duration::from_secs(300)).await;
         debug!("check_for_fw_updates done?");
     }
 }
@@ -128,15 +109,40 @@ async fn check_for_fw_updates_task(stack: &'static Stack<'static>, tls_seed: u64
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     // generator version: 0.2.2
+    let binary_version = Version::parse(config::RELEASE_VERSION)
+        .map_err(BBBotError::from)
+        .expect("Should be a valid version number");
+    info!("hello from version: {}", binary_version);
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
     esp_alloc::heap_allocator!(72 * 1024);
 
+    // Initialize simple logger that outputs to esp-println
+    struct SimpleLogger;
+    impl log::Log for SimpleLogger {
+        fn enabled(&self, _metadata: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                esp_println::println!("[{}] {}", record.level(), record.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: SimpleLogger = SimpleLogger;
+    log::set_logger(&LOGGER).unwrap();
+    log::set_max_level(log::LevelFilter::Debug);
+
     let timer0 = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER);
     esp_hal_embassy::init(timer0.alarm0);
+    println!("Starting application...");
+    esp_println::println!("Direct esp_println test");
     info!("Embassy initialized!");
+    info!("After info log");
+    esp_println::println!("Another direct test");
 
     let mut rng = Rng::new(peripherals.RNG);
 
@@ -182,6 +188,11 @@ async fn main(spawner: Spawner) {
         Timer::after(Duration::from_millis(500)).await;
     }
 
+    let mut storage = FlashStorage::new();
+    debug!("This version is slightly newer!!");
+    if let Err(_error) = accept_fw(&mut storage) {
+        error!("Error accepting firmware");
+    }
     debug!("spawning check_for_fw_updates_task");
     spawner
         .spawn(check_for_fw_updates_task(wifi_manager.stack, tls_seed))

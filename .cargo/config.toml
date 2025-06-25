@@ -1,5 +1,5 @@
 [target.xtensa-esp32s3-none-elf]
-runner = "probe-rs run --chip=esp32s3"
+runner = "espflash flash --monitor"
 
 [env]
 DEFMT_LOG = "debug"
