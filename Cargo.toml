@@ -71,8 +71,8 @@ reqwless = { version = "0.13.0", features = ["alloc"] }
 anyhow = { version = "1.0.95", default-features = false }
 botifactory-types = { git = "https://github.com/izzyhub/botifactory-types" }
 #botifactory-types = { path = "../botifactory-types" }
-bb-bot-simplified-wifi = { path = "../bb-bot-simplified-wifi" }
-#bb-bot-simplified-wifi = { git = "https://github.com/izzyhub/bb-bot-simplified-wifi", default-features = false }
+#bb-bot-simplified-wifi = { path = "../bb-bot-simplified-wifi" }
+bb-bot-simplified-wifi = { git = "https://github.com/izzyhub/bb-bot-simplified-wifi", default-features = false }
 #botifactory-ota-nostd = { path = "../botifactory-ota-nostd" }
 botifactory-ota-nostd = { git = "https://github.com/izzyhub/botifactory-ota-nostd" }
 thiserror = { version = "2.0.12", default-features = false }
